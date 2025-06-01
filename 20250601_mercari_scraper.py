@@ -13,6 +13,12 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
+# Optional private helpers or data
+try:
+    from private_code import *  # noqa: F401,F403
+except Exception:
+    pass
+
 # UI設定
 APP_BG = "#181D23"
 FRAME_BG = "#222831"

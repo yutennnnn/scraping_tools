@@ -15,6 +15,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
+# Optional private helpers or data
+try:
+    from private_code import *  # noqa: F401,F403
+except Exception:
+    pass
+
 APP_BG = "#181D23"
 FRAME_BG = "#222831"
 ENTRY_BG = "#323943"

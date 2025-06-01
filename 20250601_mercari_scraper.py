@@ -13,11 +13,13 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
-# Optional private helpers or data
+# Core scraping logic is now expected in private_code.py
 try:
-    from private_code import *  # noqa: F401,F403
-except Exception:
-    pass
+    from private_code import extract_price, process_excel
+except Exception as e:  # pragma: no cover - private module may not exist
+    raise ImportError(
+        "Required functions not found. Please implement them in private_code.py"
+    ) from e
 
 # UI設定
 APP_BG = "#181D23"
@@ -33,117 +35,6 @@ GUIDE_FG = "#757575"
 FONT_MAIN = ("Segoe UI", 13)
 FONT_TITLE = ("Segoe UI", 19, "bold")
 
-def extract_price(url, driver):
-    try:
-        driver.get(url)
-        time.sleep(2)
-
-        item_price_spans = driver.find_elements(By.CSS_SELECTOR, 'div[data-testid="price"] > span')
-        if len(item_price_spans) >= 2:
-            price = re.sub(r'[^\d]', '', item_price_spans[1].text)
-            if price:
-                return price
-
-        shop_price_spans = driver.find_elements(By.CSS_SELECTOR, 'div[data-testid="product-price"] > span')
-        if len(shop_price_spans) >= 2:
-            price = re.sub(r'[^\d]', '', shop_price_spans[1].text)
-            if price:
-                return price
-
-        html = driver.page_source
-        m = re.search(r'itemprop="price"[^>]*content="(\d+)"', html)
-        if m:
-            return m.group(1)
-        m2 = re.search(r'<span[^>]*itemprop="price"[^>]*>([\d,]+)</span>', html)
-        if m2:
-            return m2.group(1).replace(',', '')
-
-        return "URLエラー"
-    except Exception as e:
-        print(f"[ERROR] extract_price {url}: {e}")
-        return "URLエラー"
-
-def process_excel(excel_path, gui_status_callback=None, progress_var=None, total_var=None, progress_bar=None):
-    wb = load_workbook(excel_path)
-    ws = wb.active
-
-    header_row = 1     # <<<<<< 必ず1に！（1行目=ヘッダー、2行目=最初のデータ行）
-    url_col = 4        # D列
-    price_col = 12     # L列
-    min_row = header_row + 1
-    last_row = ws.max_row
-
-    wait_per_row = 3
-    total_rows = last_row - min_row + 1 + 1  # <<<<<< +1で2行目も進捗バー含む
-    processed = 0
-
-    if progress_bar:
-        progress_bar["maximum"] = total_rows
-
-    options = Options()
-    options.add_argument('--headless=new')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
-    driver.implicitly_wait(10)
-
-    t0 = time.time()
-
-    for row in range(min_row, last_row + 1):
-        cell_val = ws.cell(row=row, column=url_col).value
-        print(f"[DEBUG] row={row}, D列値={repr(cell_val)}")
-
-        if cell_val is None or str(cell_val).strip() == "":
-            ws.cell(row=row, column=price_col).value = None
-            if progress_var:
-                progress_var.set(processed)
-                if progress_bar: progress_bar.update()
-            continue
-
-        cell_str = str(cell_val).strip()
-        urls = re.findall(r'https://jp\.mercari\.com/(?:item|shops/product)/[a-zA-Z0-9]+', cell_str)
-        price = None
-
-        processed += 1
-        remaining = total_rows - processed
-        eta = max(0, math.ceil(remaining * wait_per_row))
-        status_msg = f"進捗: {processed}/{total_rows}件 | 残り想定: 約{eta}秒"
-
-        if urls:
-            for url in urls:
-                print(f"[INFO] ({row}) Try: {url}")
-                if gui_status_callback:
-                    gui_status_callback(f"{status_msg}\n行{row}: {url}の価格取得中…")
-                price = extract_price(url, driver)
-                if price and price not in ["URLエラー"]:
-                    ws.cell(row=row, column=price_col).value = int(price)
-                    print(f"[SUCCESS] 行{row}: {url} → {price}円")
-                    if gui_status_callback:
-                        gui_status_callback(f"{status_msg}\n行{row}: {url} → {price}円")
-                    break
-            if not price or price == "URLエラー":
-                ws.cell(row=row, column=price_col).value = price
-                print(f"[FAIL] 行{row}: {url} → {price}")
-                if gui_status_callback:
-                    gui_status_callback(f"{status_msg}\n行{row}: {url} → {price}")
-        else:
-            ws.cell(row=row, column=price_col).value = "選択肢未入力価格無し"
-            print(f"[SKIP] 行{row}: 商品URLがD列に見つからず")
-            if gui_status_callback:
-                gui_status_callback(f"{status_msg}\n行{row}: 商品URLがD列に見つからず")
-
-        if progress_var:
-            progress_var.set(processed)
-            if progress_bar: progress_bar.update()
-
-        time.sleep(1.5)
-
-    driver.quit()
-    wb.save(excel_path)
-    wb.close()
-    print(f"--- 完了：処理行数={processed} ---")
-    return processed
 
 def main():
     def select_excel():

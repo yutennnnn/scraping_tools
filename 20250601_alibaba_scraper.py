@@ -15,11 +15,17 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# Optional private helpers or data
+# Core scraping logic is now expected in private_code.py
 try:
-    from private_code import *  # noqa: F401,F403
-except Exception:
-    pass
+    from private_code import (
+        normalize_option_name,
+        extract_price_1688,
+        process_excel,
+    )
+except Exception as e:  # pragma: no cover - private module may not exist
+    raise ImportError(
+        "Required functions not found. Please implement them in private_code.py"
+    ) from e
 
 APP_BG = "#181D23"
 FRAME_BG = "#222831"
@@ -34,145 +40,6 @@ GUIDE_FG = "#757575"
 FONT_MAIN = ("Segoe UI", 13)
 FONT_TITLE = ("Segoe UI", 19, "bold")
 
-def normalize_option_name(text):
-    if not text:
-        return ""
-    text = re.sub(r"[\s\u3000（）\[\]【】\(\)『』]", "", text)
-    text = text.replace('&quot;', '').replace('"', '').replace("'", "")
-    return text.strip()
-
-def extract_price_1688(url, driver, option_value=None):
-    try:
-        driver.get(url)
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
-        )
-        time.sleep(2.5)
-
-        # SKUパターン1：従来のdiv.prop-name[title]
-        prop_divs = driver.find_elements(By.CSS_SELECTOR, "div.prop-name[title]")
-        sku_set = set()
-        for div in prop_divs:
-            title = div.get_attribute("title")
-            norm_title = normalize_option_name(title)
-            if norm_title:
-                sku_set.add(norm_title)
-
-        # SKUパターン2：テーブル型（.sku-prop-module-name+div .sku-item-wrapperなど）も取得
-        sku_table_rows = driver.find_elements(By.CSS_SELECTOR, ".sku-prop-module-name + div .sku-item-wrapper")
-        for tr in sku_table_rows:
-            txt = tr.text.strip()
-            if txt:
-                sku_set.add(txt)
-
-        # C列空欄かつSKU2種以上 → 絶対に金額抽出せず
-        if not (option_value and str(option_value).strip()):
-            if len(sku_set) >= 2:
-                return "選択肢未入力価格無し"
-            else:
-                try:
-                    price_block = driver.find_element(By.CSS_SELECTOR, "div.discountPrice-price")
-                    txt = price_block.text.strip()
-                    m = re.search(r"([0-9]+(?:\.[0-9]+)?)元", txt)
-                    if m:
-                        return m.group(1)
-                except Exception as e:
-                    print(f"[WARN] 価格エリア取得失敗: {e}")
-                html = driver.page_source
-                m3 = re.search(r"([0-9]+(?:\.[0-9]+)?)元", html)
-                if m3:
-                    return m3.group(1)
-                return "URLエラー"
-
-        # C列指定時：従来のSKUクリック
-        norm_opt = normalize_option_name(option_value)
-        matched_div = None
-        for div in prop_divs:
-            title = div.get_attribute("title")
-            if title and (norm_opt == normalize_option_name(title) or norm_opt in normalize_option_name(title)):
-                matched_div = div
-                break
-        if matched_div:
-            try:
-                driver.execute_script("arguments[0].scrollIntoView(true);", matched_div)
-                time.sleep(0.2)
-                matched_div.click()
-                time.sleep(1.0)
-                WebDriverWait(driver, 10).until(
-                    EC.visibility_of_element_located((By.CSS_SELECTOR, "div.discountPrice-price"))
-                )
-                price_block = driver.find_element(By.CSS_SELECTOR, "div.discountPrice-price")
-                txt = price_block.text.strip()
-                m = re.search(r"([0-9]+(?:\.[0-9]+)?)元", txt)
-                if m:
-                    return m.group(1)
-            except Exception as e:
-                print(f"[WARN] 選択肢クリックor価格抽出失敗: {e}")
-
-        return "URLエラー"
-    except Exception as e:
-        print(f"[ERROR] extract_price_1688 {url}: {e}")
-        return "URLエラー"
-
-def process_excel(excel_path, gui_status_callback=None, progress_var=None, total_var=None):
-    wb = load_workbook(excel_path)
-    ws = wb.active
-
-    header_row = 1
-    url_col = 2
-    option_col = 3
-    price_col = 11
-    min_row = header_row + 1
-    last_row = ws.max_row
-
-    wait_per_row = 4
-    total_rows = last_row - min_row + 1
-    t0 = time.time()
-    processed = 0
-
-    options = Options()
-    options.add_argument('--headless=new')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
-    driver.implicitly_wait(10)
-
-    for row in range(min_row, last_row + 1):
-        url_val = ws.cell(row=row, column=url_col).value
-        option_val = ws.cell(row=row, column=option_col).value
-
-        if url_val is None or str(url_val).strip() == "":
-            ws.cell(row=row, column=price_col).value = None
-            continue
-
-        url = str(url_val).strip()
-        option = str(option_val).strip() if option_val else None
-
-        processed += 1
-        remaining = total_rows - processed
-        eta = max(0, math.ceil(remaining * wait_per_row))
-        status_msg = f"進捗: {processed}/{total_rows}件 | 残り想定: 約{eta}秒\n{url} の価格取得中…"
-
-        if gui_status_callback:
-            gui_status_callback(status_msg)
-
-        if progress_var and total_var:
-            progress_var.set(processed)
-            total_var.set(total_rows)
-
-        price = extract_price_1688(url, driver, option_value=option)
-        ws.cell(row=row, column=price_col).value = price
-
-        if gui_status_callback:
-            gui_status_callback(status_msg + f"\n抽出結果: {price}")
-
-        time.sleep(1.5)
-
-    driver.quit()
-    wb.save(excel_path)
-    wb.close()
-    return processed
 
 def main():
     def select_excel():
